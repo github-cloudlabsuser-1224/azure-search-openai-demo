@@ -90,7 +90,20 @@ class ThoughtStep:
     props: Optional[dict[str, Any]] = None
 
 
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
+from abc import ABC
+from azure.search.documents import SearchClient, Document
+from azure.core.async_paging import AsyncItemPaged
+from openai import AsyncOpenAI
+from urllib.parse import urljoin
+import aiohttp
+import os
+
 class Approach(ABC):
+    """
+    Base class for different approaches used in the application.
+    """
+
     def __init__(
         self,
         search_client: SearchClient,
@@ -98,13 +111,29 @@ class Approach(ABC):
         auth_helper: AuthenticationHelper,
         query_language: Optional[str],
         query_speller: Optional[str],
-        embedding_deployment: Optional[str],  # Not needed for non-Azure OpenAI or for retrieval_mode="text"
+        embedding_deployment: Optional[str],
         embedding_model: str,
         embedding_dimensions: int,
         openai_host: str,
         vision_endpoint: str,
         vision_token_provider: Callable[[], Awaitable[str]],
     ):
+        """
+        Initialize the Approach class.
+
+        Args:
+            search_client (SearchClient): The Azure Cognitive Search client.
+            openai_client (AsyncOpenAI): The OpenAI client.
+            auth_helper (AuthenticationHelper): The authentication helper.
+            query_language (Optional[str]): The query language.
+            query_speller (Optional[str]): The query speller.
+            embedding_deployment (Optional[str]): The embedding deployment.
+            embedding_model (str): The embedding model.
+            embedding_dimensions (int): The embedding dimensions.
+            openai_host (str): The OpenAI host.
+            vision_endpoint (str): The vision endpoint.
+            vision_token_provider (Callable[[], Awaitable[str]]): The token provider for vision endpoint.
+        """
         self.search_client = search_client
         self.openai_client = openai_client
         self.auth_helper = auth_helper
@@ -117,7 +146,17 @@ class Approach(ABC):
         self.vision_endpoint = vision_endpoint
         self.vision_token_provider = vision_token_provider
 
-    def build_filter(self, overrides: dict[str, Any], auth_claims: dict[str, Any]) -> Optional[str]:
+    def build_filter(self, overrides: Dict[str, Any], auth_claims: Dict[str, Any]) -> Optional[str]:
+        """
+        Build the filter based on the overrides and authentication claims.
+
+        Args:
+            overrides (Dict[str, Any]): The overrides for the filter.
+            auth_claims (Dict[str, Any]): The authentication claims.
+
+        Returns:
+            Optional[str]: The built filter string.
+        """
         exclude_category = overrides.get("exclude_category")
         security_filter = self.auth_helper.build_security_filters(overrides, auth_claims)
         filters = []
@@ -140,6 +179,24 @@ class Approach(ABC):
         minimum_search_score: Optional[float],
         minimum_reranker_score: Optional[float],
     ) -> List[Document]:
+        """
+        Perform a search operation.
+
+        Args:
+            top (int): The number of documents to retrieve.
+            query_text (Optional[str]): The query text.
+            filter (Optional[str]): The filter string.
+            vectors (List[VectorQuery]): The vector queries.
+            use_text_search (bool): Flag indicating whether to use text search.
+            use_vector_search (bool): Flag indicating whether to use vector search.
+            use_semantic_ranker (bool): Flag indicating whether to use semantic ranker.
+            use_semantic_captions (bool): Flag indicating whether to use semantic captions.
+            minimum_search_score (Optional[float]): The minimum search score.
+            minimum_reranker_score (Optional[float]): The minimum reranker score.
+
+        Returns:
+            List[Document]: The list of retrieved documents.
+        """
         search_text = query_text if use_text_search else ""
         search_vectors = vectors if use_vector_search else []
         if use_semantic_ranker:
@@ -196,7 +253,18 @@ class Approach(ABC):
 
     def get_sources_content(
         self, results: List[Document], use_semantic_captions: bool, use_image_citation: bool
-    ) -> list[str]:
+    ) -> List[str]:
+        """
+        Get the content of the sources.
+
+        Args:
+            results (List[Document]): The list of documents.
+            use_semantic_captions (bool): Flag indicating whether to use semantic captions.
+            use_image_citation (bool): Flag indicating whether to use image citation.
+
+        Returns:
+            List[str]: The list of source contents.
+        """
         if use_semantic_captions:
             return [
                 (self.get_citation((doc.sourcepage or ""), use_image_citation))
@@ -211,6 +279,16 @@ class Approach(ABC):
             ]
 
     def get_citation(self, sourcepage: str, use_image_citation: bool) -> str:
+        """
+        Get the citation for a source.
+
+        Args:
+            sourcepage (str): The source page.
+            use_image_citation (bool): Flag indicating whether to use image citation.
+
+        Returns:
+            str: The citation string.
+        """
         if use_image_citation:
             return sourcepage
         else:
@@ -223,6 +301,15 @@ class Approach(ABC):
             return sourcepage
 
     async def compute_text_embedding(self, q: str):
+        """
+        Compute the text embedding.
+
+        Args:
+            q (str): The input text.
+
+        Returns:
+            VectorizedQuery: The vectorized query.
+        """
         SUPPORTED_DIMENSIONS_MODEL = {
             "text-embedding-ada-002": False,
             "text-embedding-3-small": True,
@@ -236,7 +323,6 @@ class Approach(ABC):
             {"dimensions": self.embedding_dimensions} if SUPPORTED_DIMENSIONS_MODEL[self.embedding_model] else {}
         )
         embedding = await self.openai_client.embeddings.create(
-            # Azure OpenAI takes the deployment name as the model name
             model=self.embedding_deployment if self.embedding_deployment else self.embedding_model,
             input=q,
             **dimensions_args,
@@ -245,6 +331,15 @@ class Approach(ABC):
         return VectorizedQuery(vector=query_vector, k_nearest_neighbors=50, fields="embedding")
 
     async def compute_image_embedding(self, q: str):
+        """
+        Compute the image embedding.
+
+        Args:
+            q (str): The input text.
+
+        Returns:
+            VectorizedQuery: The vectorized query.
+        """
         endpoint = urljoin(self.vision_endpoint, "computervision/retrieval:vectorizeText")
         headers = {"Content-Type": "application/json"}
         params = {"api-version": "2023-02-01-preview", "modelVersion": "latest"}
@@ -262,16 +357,38 @@ class Approach(ABC):
 
     async def run(
         self,
-        messages: list[ChatCompletionMessageParam],
+        messages: List[ChatCompletionMessageParam],
         session_state: Any = None,
-        context: dict[str, Any] = {},
-    ) -> dict[str, Any]:
+        context: Dict[str, Any] = {},
+    ) -> Dict[str, Any]:
+        """
+        Run the approach.
+
+        Args:
+            messages (List[ChatCompletionMessageParam]): The list of chat completion messages.
+            session_state (Any): The session state.
+            context (Dict[str, Any]): The context.
+
+        Returns:
+            Dict[str, Any]: The response from the approach.
+        """
         raise NotImplementedError
 
     async def run_stream(
         self,
-        messages: list[ChatCompletionMessageParam],
+        messages: List[ChatCompletionMessageParam],
         session_state: Any = None,
-        context: dict[str, Any] = {},
-    ) -> AsyncGenerator[dict[str, Any], None]:
+        context: Dict[str, Any] = {},
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Run the approach in a streaming fashion.
+
+        Args:
+            messages (List[ChatCompletionMessageParam]): The list of chat completion messages.
+            session_state (Any): The session state.
+            context (Dict[str, Any]): The context.
+
+        Yields:
+            Dict[str, Any]: The response from the approach.
+        """
         raise NotImplementedError
